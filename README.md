@@ -10,6 +10,8 @@ The objective of this project is to develop an intelligent robotic system capabl
 
 
 ---
+## Pick and Place in action 
+🎥 [Watch Pick and Place in Action](https://drive.google.com/file/d/1lGE5_qTYEKHzsjagRNLrs4xiAddRLKvG/view?usp=sharing)
 
 ## 🧩 Task Breakdown (Guidance Only)
 
@@ -79,13 +81,17 @@ The project is divided into 5 major tasks:
 ├── main.py                      # Example runner script
 ├── README.md
 └── src
-    ├── objects.py               # Object and obstacle definitions
+    ├── control.py               # Control function 
+    ├── grasping.py              # grasping logic
+    ├── Kalman_Filter.py         # tracking the obstacles
+    ├── objects.py               # Obstacles logic
+    ├── perception.py            # eyes of our franka robot 
+    ├── PnP_normal.py            # Pick and place with out obstacle avoidance
+    ├── PnP_obstacle_avoidance.py   # Pick and place with obstacle avoidance 
+    ├── pnp_with_grasp.py        # Pick and Place with grasp
     ├── robot.py                 # Robot class
     ├── simulation.py            # Simulation environment
-    └── control.py               # Conrol class 
-    ├──perception.py             # perception class
-    ├── utility.py               # utility functions
-    ├── pickandplace.py          # pick and place function
+    └── utils.py               # Control class 
 
 
 ---
@@ -111,8 +117,6 @@ Used:
 
 Implemented an IK-solver (e.g., pseudo-inverse) for the Franka Panda robot to reach target positions.
 
-![Controller](images/controller_view.jpg)
-🎥 [Watch Controller in Action](videos/controller_demo.mp4)
 
 ---
 
@@ -120,8 +124,6 @@ Implemented an IK-solver (e.g., pseudo-inverse) for the Franka Panda robot to re
 
 Used our IK-based controller and camera to execute object grasps. Begin with fixed objects (e.g., foam brick) and extend to random YCB items.
 
-![Grasping](images/grasping_view.jpg)
-🎥 [Watch Grasping in Action](videos/grasping_demo.mp4)
 
 ---
 
@@ -129,8 +131,6 @@ Used our IK-based controller and camera to execute object grasps. Begin with fix
 
 Tracks red sphere obstacles using the static camera setup and visualize obstacle motion.  Used Kalman Filter.
 
-![Tracking](images/tracking_view.jpg)
-🎥 [Watch Tracking in Action](videos/tracking_demo.mp4)
 
 ---
 
@@ -138,8 +138,6 @@ Tracks red sphere obstacles using the static camera setup and visualize obstacle
 
 Planned a trajectory to the goal while avoiding obstacles. 
 
-![Planning](images/planning_view.jpg)
-🎥 [Watch Planning in Action](videos/planning_demo.mp4)
 
 Example (no obstacle avoidance):
 
