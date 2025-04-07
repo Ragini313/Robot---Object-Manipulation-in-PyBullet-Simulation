@@ -1,6 +1,8 @@
+
 import pybullet as p
 import open3d as o3d
 import numpy as np 
+import matplotlib.pyplot as plt
 
 import cv2
 
@@ -9,201 +11,330 @@ from src.utils import pb_image_to_numpy, depth_to_point_cloud
 from src.robot import Robot
 from src.simulation import Simulation
 
-# from src.utils import depth_to_point_cloud
 
-# class Perception:
-def process_camera_data(rgb, depth, seg, viewMat_inv, intrinsic, camera_name):
-    """Process RGB, depth, and segmentation data from a single camera."""
-    unique_ids = np.unique(seg)
-    object_poses = {}
 
-    for obj_id in unique_ids:
-        if obj_id <= 0:  # Skip background
-            continue
+def camera_to_world_transform(view_matrix, static: bool = True) -> np.ndarray:
+    view_matrix = np.array(view_matrix).reshape(4, 4, order='F')  # Fortran-order reshape
+    transform = np.linalg.inv(view_matrix)
+    
+    # Invert X and Z translation components
+    transform[0, 3] = -transform[0, 3]  # X-axis
+    transform[2, 3] = -transform[2, 3]  # Z-axis
+    
+    # Additional rotation matrix (flips X and Z axes)
+    additional_rotation = np.array([
+        [1, 0, 0, 0],
+        [ 0, 1, 0, 0],
+        [ 0, 0, -1, 0],
+        [ 0, 0, 0, 1]
+    ])
+    
+    return additional_rotation @ transform
 
-        # Create a binary mask for this object
-        mask = (seg == obj_id)
+def camera_to_world_transform_1(view_matrix, static: bool = True) -> np.ndarray:   ## this is for non-ycb_objects
+    view_matrix = np.array(view_matrix).reshape(4, 4, order='F')  # Fortran-order reshape
+    transform = np.linalg.inv(view_matrix)
+    
+    # Invert X and Z translation components
+    transform[0, 3] = -transform[0, 3]  # X-axis
+    transform[2, 3] = -transform[2, 3]  # Z-axis
+    
+    # Additional rotation matrix (flips X and Z axes)
+    additional_rotation = np.array([
+        [-1, 0, 0, 0],
+        [ 0, 1, 0, 0],
+        [ 0, 0, -1, 0],
+        [ 0, 0, 0, 1]
+    ])
+    
+    return additional_rotation @ transform
 
-        # Filter RGB and depth using the mask
-        rgb_masked = np.where(mask[..., np.newaxis], rgb, 0)
-        depth_masked = np.where(mask, depth, 0)
 
-        # Create RGBD image
-        rgbd = o3d.geometry.RGBDImage.create_from_color_and_depth(
-            color=o3d.geometry.Image(rgb_masked),
-            depth=o3d.geometry.Image(depth_masked),
-            depth_scale=1.0,
-            depth_trunc=1000.0,
-            convert_rgb_to_intensity=False
-        )
-
-        # Create point cloud
-        pcd = o3d.geometry.PointCloud.create_from_rgbd_image(rgbd, intrinsic)
-
-        # Remove points with zero depth
-        points = np.asarray(pcd.points)
-        colors = np.asarray(pcd.colors)
-        mask = ~np.all(points == 0, axis=1)
-        pcd.points = o3d.utility.Vector3dVector(points[mask])
-        pcd.colors = o3d.utility.Vector3dVector(colors[mask])
-
-        if len(pcd.points) < 10:
-            continue  # Skip objects with too few points
-
-        # Compute centroid and orientation
-        points_array = np.asarray(pcd.points)
-        centroid_camera = np.mean(points_array, axis=0)
-        centroid_world = np.dot(viewMat_inv, np.append(centroid_camera, 1.0))[:3]
-
-        obb = pcd.get_oriented_bounding_box()
-        orientation_camera = obb.R
-        orientation_world = np.dot(viewMat_inv[:3, :3], orientation_camera)
-
-        o3d.visualization.draw_geometries([pcd, obb])
+def estimate_ycb_object_pose(img, view_mat, object_id, width, height, far, near, focal_length, show_visualizations=False):
+    """
+    Estimate the pose of an object in the scene given its segmentation ID.
+    
+    Args:
+        img: The camera image tuple from pybullet's getCameraImage
+        view_mat: The view matrix used for rendering
+        object_id: The segmentation ID of the object to track
+        width, height: Image dimensions
+        far, near: Camera clipping planes
+        focal_length: Camera focal length
+        show_visualizations: Whether to display debug visualizations
+    
+    Returns:
+        center_world: The object's center position in world coordinates (3D)
+        center_cam: The object's center position in camera coordinates (3D)
+    """
+    # Extract components from camera image
+    rgb_image = img[2][:, :, :3]  # RGB
+    depth_buffer = img[3]          # Depth buffer
+    seg_mask = img[4]              # Segmentation mask
+    
+    # Convert depth buffer to actual distances
+    depth = far * near / (far - (far - near) * depth_buffer)
+    
+    # Create binary mask for the object
+    binary_mask = (seg_mask == object_id)
+    
+    if show_visualizations:
+        # Visualize segmentation mask
+        plt.imshow(binary_mask, cmap='gray')
+        plt.title(f"Segmentation Mask (Object ID={object_id})")
+        plt.show()
         
-        ## From this visualisation, i note the following:
-        # id_1 = background
-        # id_2 = table
-        # id_3 = robot
-        # id_4 = goal_basket
-        # id_5 = ycb_banana?
-        # id_6 = obstacle_1
-        # id_7 = obstacle_2
-
-        object_poses[obj_id] = {
-            'position_camera': centroid_camera,
-            'orientation_camera': orientation_camera,
-            'position_world': centroid_world,
-            'orientation_world': orientation_world,
-            'dimensions': obb.extent
-        }
-
-    return object_poses
-
-def combine_poses(poses1, poses2):
-    """Combine poses from two cameras."""
-    combined_poses = {}
-    for obj_id in set(poses1.keys()).union(set(poses2.keys())):
-        if obj_id in poses1 and obj_id in poses2:
-            # Average positions and orientations
-            pos1 = poses1[obj_id]['position_world']
-            pos2 = poses2[obj_id]['position_world']
-            combined_pos = (pos1 + pos2) / 2
-
-            ori1 = poses1[obj_id]['orientation_world']
-            ori2 = poses2[obj_id]['orientation_world']
-            combined_ori = (ori1 + ori2) / 2  # Simple averaging (can be improved)
-
-            combined_poses[obj_id] = {
-                'position_world': combined_pos,
-                'orientation_world': combined_ori,
-                'dimensions': poses1[obj_id]['dimensions']  # Use dimensions from one camera
-            }
-        elif obj_id in poses1:
-            combined_poses[obj_id] = poses1[obj_id]
-        else:
-            combined_poses[obj_id] = poses2[obj_id]
-    return combined_poses
-
-def visualize_poses(poses):
-    """Visualize object poses."""
-    vis = o3d.visualization.Visualizer()
-    vis.create_window()
-
-    for obj_id, pose in poses.items():
-        # Create coordinate frame at the object's position
-        obj_frame = o3d.geometry.TriangleMesh.create_coordinate_frame(
-            size=0.2, 
-            origin=pose['position_world']
-        )
-        vis.add_geometry(obj_frame)
-
-    vis.run()
-    vis.destroy_window()
-
-
-def estimate_obb_from_camera(rgb, depth, seg_mask, obj_id, intrinsic, view_matrix_inv):
-    """Estimates OBB without ground truth, using only camera data."""
-    # Create mask for the target object
-    mask = (seg_mask == obj_id)
-    if not np.any(mask):
-        return None
-
-    # Mask RGB and depth
-    rgb_masked = np.where(mask[..., None], rgb, 0)
-    depth_masked = np.where(mask, depth, 0)
-
-    # Create Open3D RGBD image
-    rgbd = o3d.geometry.RGBDImage.create_from_color_and_depth(
-        color=o3d.geometry.Image(rgb_masked.astype(np.uint8)),
-        depth=o3d.geometry.Image(depth_masked.astype(np.float32)),
-        depth_scale=1.0,
-        depth_trunc=1.0,  # Adjust based on your scene
-        convert_rgb_to_intensity=False
-    )
-
-    # Generate point cloud
-    pcd = o3d.geometry.PointCloud.create_from_rgbd_image(
-        rgbd, intrinsic, project_valid_depth_only=True
-    )
-
-    # Remove outliers and downsample
-    pcd = pcd.voxel_down_sample(voxel_size=0.01)
-    pcd, _ = pcd.remove_statistical_outlier(nb_neighbors=20, std_ratio=2.0)
-
-    if len(pcd.points) < 10:
-        return None
-
-    # Compute OBB
-    obb = pcd.get_oriented_bounding_box()
-
-    # Transform from camera to world coordinates
-    points = np.asarray(pcd.points)
-    points_homog = np.hstack([points, np.ones((len(points), 1))])
-    points_world = (view_matrix_inv @ points_homog.T).T[:, :3]
-
-    # Recompute OBB in world coordinates
-    pcd_world = o3d.geometry.PointCloud()
-    pcd_world.points = o3d.utility.Vector3dVector(points_world)
-    obb_world = pcd_world.get_oriented_bounding_box()
-
-    return {
-        'position': obb_world.center,
-        'orientation': obb_world.R,
-        'extents': obb_world.extent
-    }
-
-
-## For accessing the EE camera when on top of YCB object:
- # # Capture RGB, depth, and segmentation images from the EE camera
-    # rgb_ee, depth_ee, seg_ee = sim.get_ee_renders()
-
+        # # Visualize masked depth
+        # masked_depth = np.where(binary_mask, depth, np.nan)
+        # plt.imshow(masked_depth, cmap='viridis')
+        # plt.colorbar(label='Depth (meters)')
+        # plt.title(f"Masked Depth (Object ID: {object_id})")
+        # plt.axis('off')
+        # plt.show()
     
-    # # Get view matrix for EE camera
-    # ee_pos, ee_rot = sim.robot.get_ee_pose()
-    # rot_matrix = p.getMatrixFromQuaternion(ee_rot)
-    # rot_matrix = np.array(rot_matrix).reshape(3, 3)
-    # init_camera_vector = (0, 0, 1)  # z-axis
-    # init_up_vector = (0, 1, 0)  # y-axis
-    # camera_vector = rot_matrix.dot(init_camera_vector)
-    # up_vector = rot_matrix.dot(init_up_vector)
-    # ee_viewMat = p.computeViewMatrix(ee_pos, ee_pos + 0.1 * camera_vector, up_vector)
-    # ee_viewMat_array = np.array(ee_viewMat).reshape(4, 4)
-    # ee_viewMat_inv = np.linalg.inv(ee_viewMat_array)
-
-
-
-
-# Define camera intrinsic parameters (same for both cameras)
-    # intrinsic = o3d.camera.PinholeCameraIntrinsic(
-    #     width=width,
-    #     height=height,
-    #     fx=fx,
-    #     fy=fy,
-    #     cx=cx,
-    #     cy=cy
-    # )
+    # Calculate camera parameters
+    cx, cy = width / 2, height / 2
+    fx, fy = focal_length, focal_length
     
- # # Process EE camera data
-# ee_object_poses = process_camera_data(rgb_ee, depth_ee, seg_ee, ee_viewMat_inv, intrinsic, "EE Camera")
+    # Get all pixels belonging to the object
+    y_indices, x_indices = np.where(binary_mask)
+    
+    if len(y_indices) == 0:
+        print(f"No pixels found for object ID {object_id}")
+        return None, None
+    
+    # Calculate 3D points in camera coordinates
+    Z = depth[binary_mask]
+    X = (x_indices - cx) * Z / fx
+    Y = (y_indices - cy) * Z / fy
+    points_cam = np.column_stack((X, Y, Z))
+    
+    # Center in Camera Coordinates
+    center_cam = np.mean(points_cam, axis=0)
+    
+    # Compute the corrected camera-to-world transform
+    cam_to_world = camera_to_world_transform(view_mat)
+    
+    # Transform the camera-space center to world coordinates
+    center_cam_hom = np.append(center_cam, 1.0)  # Homogeneous coordinates [X, Y, Z, 1]
+    center_world_hom = cam_to_world @ center_cam_hom
+    center_world = center_world_hom[:3]  # Extract X, Y, Z
+    
+    # Get ground truth for comparison
+    try:
+        ground_truth_pos = p.getBasePositionAndOrientation(object_id)
+    except:
+        ground_truth_pos = ([-999, -999, -999], [0, 0, 0, 1])  # Dummy if object doesn't exist
+    
+    # Print debug info
+    print(f"\nYCB Object ID: {object_id}")
+    #print(f"Center (Camera): [{center_cam[0]:.2f}, {center_cam[1]:.2f}, {center_cam[2]:.2f}]")
+    print(f"Derived World Pose: [{center_world[0]:.2f}, {center_world[1]:.2f}, {center_world[2]:.2f}]")
+    print(f"Ground Truth Pose: [({ground_truth_pos[0][0]:.2f}, {ground_truth_pos[0][1]:.2f}, {ground_truth_pos[0][2]:.2f}), ...]")
+    
+    return center_world, center_cam
+
+def estimate_obstacle_pose(img, view_mat, object_id, width, height, far, near, focal_length, show_visualizations=False):
+    """
+    Estimate the pose of an object in the scene given its segmentation ID.
+    
+    Args:
+        img: The camera image tuple from pybullet's getCameraImage
+        view_mat: The view matrix used for rendering
+        object_id: The segmentation ID of the object to track
+        width, height: Image dimensions
+        far, near: Camera clipping planes
+        focal_length: Camera focal length
+        show_visualizations: Whether to display debug visualizations
+    
+    Returns:
+        center_world: The object's center position in world coordinates (3D)
+        center_cam: The object's center position in camera coordinates (3D)
+    """
+    # Extract components from camera image
+    rgb_image = img[2][:, :, :3]  # RGB
+    depth_buffer = img[3]          # Depth buffer
+    seg_mask = img[4]              # Segmentation mask
+    
+    # Convert depth buffer to actual distances
+    depth = far * near / (far - (far - near) * depth_buffer)
+    
+    # Create binary mask for the object
+    binary_mask = (seg_mask == object_id)
+    
+    if show_visualizations:
+        # Visualize segmentation mask
+        plt.imshow(binary_mask, cmap='gray')
+        plt.title(f"Segmentation Mask (Object ID={object_id})")
+        plt.show()
+        
+        # # Visualize masked depth
+        # masked_depth = np.where(binary_mask, depth, np.nan)
+        # plt.imshow(masked_depth, cmap='viridis')
+        # plt.colorbar(label='Depth (meters)')
+        # plt.title(f"Masked Depth (Object ID: {object_id})")
+        # plt.axis('off')
+        # plt.show()
+    
+    # Calculate camera parameters
+    cx, cy = width / 2, height / 2
+    fx, fy = focal_length, focal_length
+    
+    # Get all pixels belonging to the object
+    y_indices, x_indices = np.where(binary_mask)
+    
+    if len(y_indices) == 0:
+        print(f"No pixels found for object ID {object_id}")
+        return None, None
+    
+    # Calculate 3D points in camera coordinates
+    Z = depth[binary_mask]
+    X = (x_indices - cx) * Z / fx
+    Y = (y_indices - cy) * Z / fy
+    points_cam = np.column_stack((X, Y, Z))
+    
+    # Center in Camera Coordinates
+    center_cam = np.mean(points_cam, axis=0)
+    
+    # Compute the corrected camera-to-world transform
+    cam_to_world = camera_to_world_transform_1(view_mat)
+    
+    # Transform the camera-space center to world coordinates
+    center_cam_hom = np.append(center_cam, 1.0)  # Homogeneous coordinates [X, Y, Z, 1]
+    center_world_hom = cam_to_world @ center_cam_hom
+    center_world = center_world_hom[:3]  # Extract X, Y, Z
+    
+    # Get ground truth for comparison
+    try:
+        ground_truth_pos = p.getBasePositionAndOrientation(object_id)
+    except:
+        ground_truth_pos = ([-999, -999, -999], [0, 0, 0, 1])  # Dummy if object doesn't exist
+    
+    # Print debug info
+    print(f"\nObstacle ID: {object_id}")
+    #print(f"Center (Camera): [{center_cam[0]:.2f}, {center_cam[1]:.2f}, {center_cam[2]:.2f}]")
+    print(f"Derived World Pose: [{center_world[0]:.2f}, {center_world[1]:.2f}, {center_world[2]:.2f}]")
+    print(f"Ground Truth Pose: [({ground_truth_pos[0][0]:.2f}, {ground_truth_pos[0][1]:.2f}, {ground_truth_pos[0][2]:.2f}), ...]")
+    
+    return center_world, center_cam
+
+def estimate_goal_basket_pose(img, view_mat, object_id, width, height, far, near, focal_length, show_visualizations=False):
+    """
+    Estimate the pose of an object in the scene given its segmentation ID.
+    
+    Args:
+        img: The camera image tuple from pybullet's getCameraImage
+        view_mat: The view matrix used for rendering
+        object_id: The segmentation ID of the object to track
+        width, height: Image dimensions
+        far, near: Camera clipping planes
+        focal_length: Camera focal length
+        show_visualizations: Whether to display debug visualizations
+    
+    Returns:
+        center_world: The object's center position in world coordinates (3D)
+        center_cam: The object's center position in camera coordinates (3D)
+    """
+    # Extract components from camera image
+    rgb_image = img[2][:, :, :3]  # RGB
+    depth_buffer = img[3]          # Depth buffer
+    seg_mask = img[4]              # Segmentation mask
+    
+    # Convert depth buffer to actual distances
+    depth = far * near / (far - (far - near) * depth_buffer)
+    
+    # Create binary mask for the object
+    binary_mask = (seg_mask == object_id)
+    
+    if show_visualizations:
+        # Visualize segmentation mask
+        plt.imshow(binary_mask, cmap='gray')
+        plt.title(f"Segmentation Mask (Object ID={object_id})")
+        plt.show()
+        
+        # # Visualize masked depth
+        # masked_depth = np.where(binary_mask, depth, np.nan)
+        # plt.imshow(masked_depth, cmap='viridis')
+        # plt.colorbar(label='Depth (meters)')
+        # plt.title(f"Masked Depth (Object ID: {object_id})")
+        # plt.axis('off')
+        # plt.show()
+    
+    # Calculate camera parameters
+    cx, cy = width / 2, height / 2
+    fx, fy = focal_length, focal_length
+    
+    # Get all pixels belonging to the object
+    y_indices, x_indices = np.where(binary_mask)
+    
+    if len(y_indices) == 0:
+        print(f"No pixels found for object ID {object_id}")
+        return None, None
+    
+    # Calculate 3D points in camera coordinates
+    Z = depth[binary_mask]
+    X = (x_indices - cx) * Z / fx
+    Y = (y_indices - cy) * Z / fy
+    points_cam = np.column_stack((X, Y, Z))
+    
+    # Center in Camera Coordinates
+    center_cam = np.mean(points_cam, axis=0)
+    
+    # Compute the corrected camera-to-world transform
+    cam_to_world = camera_to_world_transform_1(view_mat)
+    
+    # Transform the camera-space center to world coordinates
+    center_cam_hom = np.append(center_cam, 1.0)  # Homogeneous coordinates [X, Y, Z, 1]
+    center_world_hom = cam_to_world @ center_cam_hom
+    center_world = center_world_hom[:3]  # Extract X, Y, Z
+    
+    # Get ground truth for comparison
+    try:
+        ground_truth_pos = p.getBasePositionAndOrientation(object_id)
+    except:
+        ground_truth_pos = ([-999, -999, -999], [0, 0, 0, 1])  # Dummy if object doesn't exist
+    
+    # Print debug info
+    print(f"\nGoal Basket ID: {object_id}")
+    #print(f"Center (Camera): [{center_cam[0]:.2f}, {center_cam[1]:.2f}, {center_cam[2]:.2f}]")
+    print(f"Derived World Pose: [{center_world[0]:.2f}, {center_world[1]:.2f}, {center_world[2]:.2f}]")
+    print(f"Ground Truth Pose: [({ground_truth_pos[0][0]:.2f}, {ground_truth_pos[0][1]:.2f}, {ground_truth_pos[0][2]:.2f}), ...]")
+    
+    return center_world, center_cam
+
+
+def visualize_pose_results(results):
+    """Visualize the pose estimation results."""
+    if results is None:
+        print("Object not visible in the image")
+        return
+    
+    # Display binary mask
+    plt.figure(figsize=(12, 4))
+    plt.subplot(131)
+    plt.imshow(results['binary_mask'], cmap='gray')
+    plt.title(f"Segmentation Mask (Object ID={results['object_id']})")
+    
+    # Display masked depth
+    plt.subplot(132)
+    plt.imshow(results['masked_depth'], cmap='viridis')
+    plt.colorbar(label='Depth (meters)')
+    plt.title(f"Masked Depth (Object ID: {results['object_id']})")
+    
+    # Display 2D bounding box
+    img = np.zeros((results['binary_mask'].shape[0], results['binary_mask'].shape[1], 3))
+    x_min, y_min, x_max, y_max = results['bbox_2d']
+    img[y_min:y_max, x_min:x_max] = [1, 0, 0]  # Red box
+    
+    plt.subplot(133)
+    plt.imshow(img)
+    plt.title("2D Bounding Box")
+    plt.tight_layout()
+    plt.show()
+    
+    # Print pose information
+    print(f"\nObject ID: {results['object_id']}")
+    print(f"Center (Camera): [{results['center_cam'][0]:.2f}, {results['center_cam'][1]:.2f}, {results['center_cam'][2]:.2f}]")
+    print(f"Center (World): [{results['center_world'][0]:.2f}, {results['center_world'][1]:.2f}, {results['center_world'][2]:.2f}]")
+
 

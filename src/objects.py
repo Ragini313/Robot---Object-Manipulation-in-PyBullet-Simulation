@@ -106,7 +106,7 @@ class Box:
                              globalScaling=OBJECT_SCALING)
         p.changeDynamics(self.id,
                          0,
-                         lateralFriction=10.0,
+                         lateralFriction=10.0,   #initial value = 10.0
                          spinningFriction=1.0,
                          rollingFriction=1.0,
                          frictionAnchor=True)
@@ -156,7 +156,7 @@ class YCBObject:
         self.obj_name = obj_name
         self.pos = position
         self.ori = p.getQuaternionFromEuler(orientation)
-        scaling = 1.5  # 1.5 times normal
+        scaling = 1.0  # 1.5 times normal
         object_root_path = ycb_objects.getDataPath()
         files = glob.glob(os.path.join(object_root_path, "Ycb*"))
         obj_names = [file.split('/')[-1] for file in files]

@@ -130,7 +130,7 @@ class Simulation:
                            table_scaling=robot_settings["table_scaling"])
 
         self.initial_position = sim_settings["default_obj_pos"]
-        self.obj_jitter = self.rng.uniform([-0.2, -0.2, 0], [0.2, 0.2, 0])
+        self.obj_jitter = self.rng.uniform([-0.2, -0.2, 0], [0.2, 0.2, 0])   
         self.initial_position = self.initial_position + self.obj_jitter
         self.goal = Goal(position=sim_settings["default_goal_pos"])
 

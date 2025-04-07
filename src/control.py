@@ -11,11 +11,11 @@
 # Calculate the pseudo-inverse 𝐽 + ( 𝜃 ) J + (θ) using SVD or other methods. 
 # Multiply the pseudo-inverse by the desired end-effector velocity 𝑥 ˙ x ˙ to find the joint velocities 𝜃 ˙ θ ˙ 
 
-# Our choice of method = Pseudo-inverse
+
 import yaml
 import numpy as np
 import pybullet as p
-#import robotic as ry
+
 from typing import Dict, Any, Optional
 
 
@@ -35,6 +35,8 @@ def load_robot_settings(config_path: str) -> Dict[str, Any]:
         return config.get('robot_settings', {})  # Extract robot settings
 
 robot_settings = load_robot_settings('configs/test_config.yaml')
+
+
 class Control:
     def __init__(self):
         self.robot = Robot(urdf=robot_settings.get("urdf", "default.urdf"),
@@ -45,9 +47,7 @@ class Control:
             ee_index=robot_settings.get("ee_idx", 0),
             arm_default=robot_settings.get("default_arm", []),
             table_scaling=robot_settings.get("table_scaling", TABLE_SCALING))
-        # Initialize robotic Config
-        #self.C = ry.Config()
-        #self.C.addFile(ry.raiPath(robot_settings.get("urdf", "default.urdf"))) # Load the URDF into the robotic Config
+        
 
     def quaternion_to_rotation_matrix(self, quaternion):
         """
@@ -142,57 +142,89 @@ class Control:
         rotation = R.from_euler('z', np.sum(joint_angles))
         return np.array([x, y, z]), rotation
     
-    def ik_solver(self, goal_position, goal_orientation, initial_joint_angles, max_iterations=10, tolerance=1e-3, learning_rate=0.1):
+
+
+    def ik_solver(self, goal_position, goal_orientation, initial_joint_angles, 
+                max_iterations=100, tolerance=1e-4, learning_rate=0.05):
         joint_angles = initial_joint_angles.copy()
+        
         for iteration in range(max_iterations):
+            # Get current pose and errors
             ee_pos, ee_rot = self.get_ee_pose(joint_angles)
-            position_error = goal_position - ee_pos
-        
-            # Calculate orientation error using rotation matrices
-            orientation_error = self.orientation_error(ee_rot, goal_orientation)
-        
-            # Combine position and orientation errors
-            error = np.concatenate([position_error, orientation_error])
-        
+            pos_error = goal_position - ee_pos
+            orn_error = self.orientation_error(ee_rot, goal_orientation)
+            
+            # Normalize and weight errors
+            pos_error *= 0.5  # Reduce position dominance
+            error = np.concatenate([pos_error, orn_error])
+            
+            # Check convergence
             if np.linalg.norm(error) < tolerance:
-                print(f"Converged after {iteration} iterations.")
                 return joint_angles
+            
+            # Compute Jacobian with damped least squares
             J = self.get_jacobian(joint_angles)
-            joint_velocities = self.compute_joint_velocities(J, error)
-            joint_angles += learning_rate * joint_velocities
-            print(f"Max iterations reached. Final joint angles: {joint_angles}")
+            damping = 0.1  # Critical for stability
+            J_pinv = J.T @ np.linalg.inv(J @ J.T + damping**2 * np.eye(6))
+            
+            # Apply update with joint limits
+            joint_angles += learning_rate * (J_pinv @ error)
+            joint_angles = np.clip(joint_angles, 
+                                self.robot.lower_limits, 
+                                self.robot.upper_limits)
+        
+        print("IK Warning: Max iterations reached")
         return joint_angles
 
+    def generate_trajectory(self, start_pose, end_pose, steps=10):
+        """Generate Cartesian-space waypoints"""
+        waypoints = []
+        for t in np.linspace(0, 1, steps):
+            pos = start_pose[0] + t*(end_pose[0] - start_pose[0])
+            rot = R.from_matrix(start_pose[1]).slerp(t, R.from_matrix(end_pose[1]))
+            waypoints.append((pos, rot.as_matrix()))
+        return waypoints
+    
+    def execute_trajectory(self, waypoints, max_velocity=0.3):
+        current_joints = self.robot.get_joint_positions()
+        
+        for pos, rot in waypoints:
+            # Solve IK for waypoint
+            target_joints = self.ik_solver(pos, rot, current_joints)
+            
+            # Move with velocity control
+            error = target_joints - current_joints
+            velocities = np.clip(error * 5.0, -max_velocity, max_velocity)
+            
+            for _ in range(10):  # Control loop
+                self.robot.velocity_control(velocities)
+                current_joints = self.robot.get_joint_positions()
+                new_error = target_joints - current_joints
+                velocities = np.clip(new_error * 5.0, -max_velocity, max_velocity)
+                p.stepSimulation()
+                
+                # Visualize (debug)
+                p.addUserDebugLine(
+                    self.get_ee_pose(current_joints)[0],
+                    pos, [0,1,0], lifeTime=0.2)
+                
+    def reinforce_grasp(self):
+        """Increase grip force during motion"""
+        self.robot.close_gripper(force=30)  # Normal force
+        for _ in range(50):
+            p.stepSimulation()  # Let physics settle
+            
+        # Add sideways stabilization force
+        gripper_pos = self.robot.get_ee_pose()[0]
+        p.applyExternalForce(
+            objectUniqueId=self.gripper_id,
+            linkIndex=self.robot.ee_idx,
+            forceObj=[0, 0, -5],  # Small downward force
+            posObj=gripper_pos,
+            flags=p.WORLD_FRAME
+        )
 
-def main():
-    # Define the target position and orientation
-    object_pose = (-0.050183952461055004, -0.46971427743603356, 1.3231258620680433)
-    object_orientation = (0.0, 0.0, 0.0, 1.0)  # Quaternion (x, y, z, w)
 
-    # Convert quaternion to rotation matrix
-    goal_orientation_matrix = R.from_quat(object_orientation).as_matrix()
-
-    # Initialize the Control class
-    control = Control()
-    robot = Robot()
-
-    # Get the initial joint angles from the robot (assuming the robot has a method for this)
-    initial_joint_angles = robot.get_joint_positions()  # Replace with actual initial joint angles if available
-    print(initial_joint_angles)
-    # # Solve for joint angles using inverse kinematics
-    # final_joint_angles = control.ik_solver(
-    #     goal_position=np.array(object_pose),
-    #     goal_orientation=goal_orientation_matrix,
-    #     initial_joint_angles=initial_joint_angles,
-    #     max_iterations=100,
-    #     tolerance=1e-3,
-    #     learning_rate=0.1
-    # )
-
-    # print("Final joint angles to reach the target pose:", final_joint_angles)
-
-if __name__ == "__main__":
-    main()    
 
 
 

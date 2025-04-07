@@ -1,0 +1,30 @@
+self.projection_matrix = p.computeProjectionMatrixFOV(
+            camera_settings["fov"],
+            aspect,
+            camera_settings["near"],
+            camera_settings["far"])" and "self.stat_viewMat = p.computeViewMatrix(
+            self.stat_cam_pos,
+            self.stat_cam_target_pos,
+            cameraUpVector=[0, 0, 1])
+
+
+self.projection_matrix = p.computeProjectionMatrixFOV(
+            camera_settings["fov"],
+            aspect,
+            camera_settings["near"],
+            camera_settings["far"])
+
+
+camera:
+    width: 640  # image width.
+    height: 480  # image height.
+    fov: 70.0  # camera field of view
+    near: 0.01  # camera near clipping plane
+    far: 5.0  # camera far clipping plane
+    cam_render_flag: true  # toggles cam output in pybullet GUI
+    stat_cam_pos: [1.5, 0, 3.0]  # static camera position
+    stat_cam_target_pos: [0, 0, 0.7] # static camera target position
+
+--- Real Obstacle Poses ---
+Ground Truth Pose - Obstacle 1: [(-0.70, 0.75, 1.57), ...] #... object id = 6
+Ground Truth Pose - Obstacle 2: [(0.76, -0.50, 1.98), ...] #... object id = 7

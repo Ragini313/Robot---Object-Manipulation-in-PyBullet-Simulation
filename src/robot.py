@@ -104,6 +104,8 @@ class Robot:
             controlMode=p.POSITION_CONTROL,
             targetPositions=target_positions,
         )
+       
+    ### my added helper function:
 
     def open_gripper(self):
         """
@@ -138,8 +140,18 @@ class Robot:
             jointIndices=self.gripper_idx,
             controlMode=p.POSITION_CONTROL,
             targetPositions=gripper_closing,
-            forces=[100] * len(self.gripper_idx)  # Adjust force as needed
+            forces=[200] * len(self.gripper_idx)  # Adjust force as needed
         )
+
+    
+    def get_link_positions(self):
+        """Get positions of all robot links"""
+        link_positions = []
+        for i in range(p.getNumJoints(self.id)):
+            link_state = p.getLinkState(self.id, i)
+            link_positions.append(np.array(link_state[0]))  # [0] is link world position
+        return link_positions
+
 
 
 
