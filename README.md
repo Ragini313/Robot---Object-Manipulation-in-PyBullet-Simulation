@@ -60,6 +60,10 @@ Make sure `pybullet.isNumpyEnabled()` returns True (optional but recommended).
 python3 main.py
 ```
 
+Simulation Output:
+
+![Gif](https://github.com/Ragini313/Robot---Object-Manipulation-in-PyBullet-Simulation/blob/main/debug_data/pybullet%20without%20obstacle%20sim.gif)
+
 
 ## 📌 Project Overview
 
